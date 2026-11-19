@@ -303,16 +303,20 @@ export class BridgeConnection implements BridgeSink {
   private onClose(code?: number): void {
     if (this.closed) return
     this.closed = true
-    // 非正常关闭（不是 1000 normal / 1001 going-away）各一行：关闭码、
-    // 是否已认证、存活时长与来源哈希。正常关闭不记，避免每次退出都刷屏。
     // 缺省（没有 close 帧，如底层 socket 直接消失）按 1005 处理。
     const closeCode = code ?? 1005
+    const durationMs = Date.now() - this.openedAt
+    // 每一次关闭都留一行：只有把它和关闭码放在一起，才能区分「App 自己退出/
+    // 切后台」（1000 normal / 1001 going-away）与「传输层把连接掐断」（1006，
+    // 反向隧道或上游重置）——现场排障时这两者的处置完全不同。
+    this.deps.log(`connection closed code=${closeCode} durationMs=${durationMs} auth=${this.identity !== undefined ? 'yes' : 'no'}`)
+    // 失败面仍只收集非正常关闭：设置页的「最近失败」不能因为正常退出而被刷掉。
     if (closeCode !== 1000 && closeCode !== 1001) {
       this.deps.diagnostics?.record('connection-closed', 'abnormal-close', {
         ...(this.sourceLabel !== undefined ? { source: this.sourceLabel } : {}),
         ...(this.deps.attemptId !== undefined ? { attemptId: this.deps.attemptId } : {}),
         closeCode,
-        durationMs: Date.now() - this.openedAt,
+        durationMs,
         authenticated: this.identity !== undefined,
       })
     }
