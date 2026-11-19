@@ -11,10 +11,35 @@ export function normalizeLocalPort(value: unknown): number {
     : DEFAULT_LOCAL_PORT
 }
 
+/**
+ * Normalize an operator-configured public endpoint to `https://host[:port]`.
+ *
+ * The LAN listener is TLS-only, and a port mapping or reverse tunnel may
+ * terminate on a different host and port than the LAN address, so a configured
+ * endpoint keeps its own authority. Only `https` is accepted: the app refuses
+ * plaintext transports anyway, and credentials must never reach a pairing
+ * payload.
+ */
+export function normalizePublicEndpoint(value: unknown): string | undefined {
+  const trimmed = typeof value === 'string' ? value.trim() : ''
+  if (trimmed === '') return undefined
+  try {
+    const url = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`)
+    if (url.protocol !== 'https:') return undefined
+    if (url.hostname === '' || url.username !== '' || url.password !== '') return undefined
+    return `https://${url.host}`
+  } catch {
+    return undefined
+  }
+}
+
 /** The LAN listener is TLS-only, so every advertised endpoint is `https://`. */
 export function localEndpointURLs(addresses: readonly string[], port: number): string[] {
   const normalizedPort = normalizeLocalPort(port)
-  return [...new Set(addresses)].map((address) => `https://${address}:${normalizedPort}`)
+  // A configured public endpoint already carries its own authority.
+  return [...new Set(addresses)].map((address) => address.startsWith('https://')
+    ? address
+    : `https://${address}:${normalizedPort}`)
 }
 
 export function localListenError(error: unknown, port: number): string {

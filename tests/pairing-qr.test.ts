@@ -84,6 +84,22 @@ test('pairing targets list the pinned LAN endpoint before Funnel', () => {
   ])
 })
 
+test('a configured public endpoint is labelled public but keeps the pin', () => {
+  // Same self-signed listener, reachable through a port mapping: the app still
+  // needs the fingerprint, but the label must not claim this works at home only.
+  assert.deepEqual(selectPairingTargets(
+    {
+      phase: 'online',
+      endpoints: ['https://192.168.1.149:3098', 'https://203.0.113.7:41234'],
+      tlsFingerprint: FINGERPRINT,
+    },
+    { phase: 'online' },
+  ), [
+    { host: 'https://192.168.1.149:3098', kind: 'lan', tlsFingerprint: FINGERPRINT },
+    { host: 'https://203.0.113.7:41234', kind: 'public', tlsFingerprint: FINGERPRINT },
+  ])
+})
+
 test('pairing targets never offer a LAN listener without a certificate pin', () => {
   assert.deepEqual(selectPairingTargets(
     { phase: 'online', endpoints: ['https://192.168.1.149:3098'] },

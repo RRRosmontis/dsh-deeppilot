@@ -27,6 +27,22 @@ export interface PairingTarget {
   tlsFingerprint?: string
 }
 
+/** Private IPv4 literals (RFC1918 + the CGNAT range Tailscale hands out). */
+function isPrivateEndpointHost(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname
+    const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname)
+    if (match === null) return false
+    const first = Number(match[1])
+    const second = Number(match[2])
+    if (first === 10 || (first === 192 && second === 168)) return true
+    if (first === 172 && second >= 16 && second <= 31) return true
+    return first === 100 && second >= 64 && second <= 127
+  } catch {
+    return false
+  }
+}
+
 /**
  * Return every explicit DeepPilot transport target. LAN comes first because
  * it is private and lower latency; an online Funnel remains available as a
@@ -41,7 +57,16 @@ export function selectPairingTargets(
   const targets: PairingTarget[] = []
   if (local.phase === 'online' && isLanTlsFingerprint(local.tlsFingerprint)) {
     for (const host of local.endpoints) {
-      if (validTargetHost(host)) targets.push({ host, kind: 'lan', tlsFingerprint: local.tlsFingerprint })
+      if (!validTargetHost(host)) continue
+      // `local.endpoints` may carry operator-configured public addresses next to
+      // the private LAN ones. The distinction is display-only — the wire payload
+      // never carries `kind` — but both keep `tlsFingerprint`, because they are
+      // served by the same self-signed listener.
+      targets.push({
+        host,
+        kind: isPrivateEndpointHost(host) ? 'lan' : 'public',
+        tlsFingerprint: local.tlsFingerprint,
+      })
     }
   }
   if (remote.phase === 'online' && remote.publicURL && validTargetHost(remote.publicURL)) {

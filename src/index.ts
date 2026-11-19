@@ -33,7 +33,7 @@ import type { Config } from './config.ts'
 import { rejectUpgrade, requestClientIdentity } from './phone-http.ts'
 import { AuthRateLimiter } from './auth-rate-limit.ts'
 import { MAX_APP_VERSION_CHARS, MAX_DEVICE_NAME_CHARS, sanitizeDeviceField } from './connection-policy.ts'
-import { localEndpointURLs } from './local-policy.ts'
+import { localEndpointURLs, normalizePublicEndpoint } from './local-policy.ts'
 import { closeServer, createPhoneServer, listen, type PhoneServerTransportError } from './phone-server.ts'
 import { loadOrCreateLanTlsIdentity, type LanTlsIdentity } from './lan-tls.ts'
 import {
@@ -274,10 +274,34 @@ export function apply(ctx: Context, options: unknown): void {
   // apply()——它被 listener 启动、配对回显与 report 三处消费，协调器不懂 TLS。
   let lanTlsIdentity: Promise<LanTlsIdentity> | undefined
   let tlsIdentityRegenerated = false
+  /**
+   * Operator-configured public endpoints for the LAN listener. Derived per
+   * snapshot rather than cached at boot, so a settings edit applies without a
+   * restart; an unparseable entry is dropped instead of breaking the LAN QR.
+   */
+  const publicEndpointURLs = (): string[] => [
+    ...new Set(
+      (currentConfig().local?.publicEndpoints ?? [])
+        .map(normalizePublicEndpoint)
+        .filter((value): value is string => value !== undefined),
+    ),
+  ]
+  /**
+   * Every host the listener is advertised under — private LAN addresses plus
+   * configured public endpoints — for the certificate's SAN list.
+   */
+  const lanTlsAltHosts = (): string[] => {
+    const hosts = [...localLANIPv4Addresses()]
+    for (const endpoint of publicEndpointURLs()) {
+      const { hostname } = new URL(endpoint)
+      hosts.push(hostname.startsWith('[') ? hostname.slice(1, -1) : hostname)
+    }
+    return hosts
+  }
   const loadLanTls = (): Promise<LanTlsIdentity> => {
     lanTlsIdentity ??= (async () => {
       await ready
-      const identity = await loadOrCreateLanTlsIdentity(join(dataDir, 'lan-tls'))
+      const identity = await loadOrCreateLanTlsIdentity(join(dataDir, 'lan-tls'), Date.now(), lanTlsAltHosts())
       if (identity.regenerated) {
         tlsIdentityRegenerated = true
         log(`LAN TLS identity created: fingerprint=${identity.fingerprint}; previously paired LAN devices must pair again`)
@@ -688,11 +712,25 @@ export function apply(ctx: Context, options: unknown): void {
     const state = localTransport.status()
     return {
       ...state,
-      endpoints: state.phase === 'online' ? localEndpointURLs(addresses, state.port) : [],
+      endpoints: state.phase === 'online'
+        ? localEndpointURLs([...addresses, ...publicEndpointURLs()], state.port)
+        : [],
       ...(tlsIdentityRegenerated ? { tlsIdentityRegenerated: true } : {}),
     }
   }
-  const remoteStatus = (): RemoteStatus => remoteTransport.status()
+  /**
+   * The app verifies a public target against the system trust store and only
+   * pins a fingerprint for LAN self-signed hosts, so a TLS-terminating reverse
+   * proxy is the supported shape for public access — the same contract Tailscale
+   * Funnel satisfies. Publish its URL as the public target, without our
+   * fingerprint: the certificate the phone sees belongs to the proxy.
+   */
+  const remoteStatus = (): RemoteStatus => {
+    const state = remoteTransport.status()
+    const override = normalizePublicEndpoint(currentConfig().remote?.publicUrlOverride)
+    if (override === undefined) return state
+    return { ...state, phase: 'online', publicURL: override }
+  }
 
   const originServer = createPhoneServer(phoneHandlers, undefined, {
     onTransportError: recordTransportError,
@@ -703,6 +741,8 @@ export function apply(ctx: Context, options: unknown): void {
 
   ;(ctx as unknown as SubContext).effect(() => {
     scheduleLocalReconcile?.()
+    log(`public endpoints: ${publicEndpointURLs().join(', ') || '(none)'}`)
+    log(`public URL override: ${normalizePublicEndpoint(currentConfig().remote?.publicUrlOverride) ?? '(none)'}`)
     void listen(originServer, 0, '127.0.0.1').then(() => {
       const address = originServer.address()
       if (address && typeof address === 'object') {

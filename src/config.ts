@@ -23,6 +23,12 @@ export interface Config {
   local?: {
     enabled?: boolean
     port?: number
+    /**
+     * Publicly reachable endpoints for the same TLS listener
+     * (`https://host[:port]`). Appended to the advertised address list so a
+     * port mapping can carry the QR code; the app still pins the certificate.
+     */
+    publicEndpoints?: string[]
   }
   /** Optional embedded remote transport. Reconciled when settings change. */
   remote?: {
@@ -34,6 +40,12 @@ export interface Config {
     funnelPort?: 443 | 8443 | 10000
     /** Concurrent Funnel WebSockets allowed from one public source address. */
     maxConnectionsPerSource?: number
+    /**
+     * Public URL of a TLS-terminating reverse proxy in front of this listener.
+     * Published as a public target WITHOUT the certificate fingerprint, the same
+     * contract Tailscale Funnel satisfies.
+     */
+    publicUrlOverride?: string
   }
   /**
    * Offline push (F-9). `apns` sends directly from the computer with the user's
@@ -82,9 +94,12 @@ export const Config = z.object({
       .max(MAX_LOCAL_PORT)
       .default(DEFAULT_LOCAL_PORT)
       .description('DeepPilot 局域网独立端口（仅 TLS；默认 3098，修改后本地连接会短暂重连）'),
+    publicEndpoints: z.array(z.string()).default([])
+      .description('公网可达的同一监听器地址（https://host[:port]）。用于端口映射 / 反向隧道把配对二维码带出局域网；证书指纹仍由插件下发'),
   }).default({
     enabled: true,
     port: DEFAULT_LOCAL_PORT,
+    publicEndpoints: [],
   }).volatile(),
   remote: z.object({
     enabled: z.boolean().default(false),
@@ -98,6 +113,8 @@ export const Config = z.object({
       .max(MAX_FUNNEL_CONNECTIONS_PER_SOURCE)
       .default(DEFAULT_FUNNEL_CONNECTIONS_PER_SOURCE)
       .description('Funnel 每个来源允许的并发连接数（1–16，修改后远程连接会短暂重连）'),
+    publicUrlOverride: z.string().default('')
+      .description('公网入口地址覆盖（https://域名）。用于由反向代理终结 TLS 的场景：作为「公网」目标下发，配对信息不带证书指纹（与 Funnel 一致，App 走系统信任）'),
   }).default({
     enabled: false,
     provider: 'tailscale-funnel',
@@ -106,6 +123,7 @@ export const Config = z.object({
     helperPath: '',
     funnelPort: 443,
     maxConnectionsPerSource: DEFAULT_FUNNEL_CONNECTIONS_PER_SOURCE,
+    publicUrlOverride: '',
   }).volatile(),
   push: z.object({
     provider: z.union(['none', 'apns', 'relay'] as const).default('none'),
